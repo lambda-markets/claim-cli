@@ -28,7 +28,7 @@ const connection = new Connection(RPC_MAINNET);
 
 // constants
 // TODO: paste the DROP_WALLETS from the check command here
-const DROP_WALLETS = []
+const DROP_WALLETS = [];
 
 // helpers
 async function promiseAllInBatches(promiseFunctions, batchSize) {
@@ -135,7 +135,10 @@ cli.command(
     // execute all promises in batches of 5 and report total
     const airdropProofData = await promiseAllInBatches(airdropProofPromises, 5);
     console.log('TOTAL', _.sumBy(airdropProofData, 'amount') / 1e5);
-    console.log('DROP_WALLETS', airdropProofData.filter(x => x.amount > 0).map(x => x.pubkey));
+    console.log(
+      'DROP_WALLETS',
+      airdropProofData.filter((x) => x.amount > 0).map((x) => x.pubkey)
+    );
   }
 );
 
@@ -151,7 +154,6 @@ cli.command(
     });
   },
   async (argv) => {
-
     // get keyfiles
     const keyFiles = FastGlob.sync(path.resolve(path.resolve(), argv.deprecated ? 'keys/DEPRECATED/*.json' : 'keys/*.json'));
     const keyPairs = await Promise.all(keyFiles.map(async (x) => Keypair.fromSecretKey(new Uint8Array(JSON.parse(await readFile(x))))));
@@ -245,6 +247,148 @@ cli.command(
     // shut down
     console.log(chalk.white.bold('\nDONE'));
     process.exit(0);
+  }
+);
+
+// COMMAND: DRAIN
+cli.command(
+  'drain [base] [quote] [tokens] [sol]',
+  'drain keys balances {base, quote, tokens, sol}',
+  (yargs) => {
+    yargs
+      .option('base', {
+        describe: 'drain base',
+        type: 'boolean',
+        default: false,
+      })
+      .option('quote', {
+        describe: 'drain quote',
+        type: 'boolean',
+        default: false,
+      })
+      .option('tokens', {
+        describe: 'drain tokens',
+        type: 'boolean',
+        default: false,
+      })
+      .option('sol', {
+        describe: 'drain sol',
+        type: 'boolean',
+        default: false,
+      });
+  },
+  async (argv) => {
+    // get keyfiles
+    const keyFiles = FastGlob.sync(path.resolve(path.resolve(), 'keys/*.json'));
+    const keyPairs = await Promise.all(keyFiles.map(async (x) => Keypair.fromSecretKey(new Uint8Array(JSON.parse(await readFile(x))))));
+    const kpBalancesPromises = keyPairs.map((x) => {
+      return async () => {
+        return {
+          pubkey: x.publicKey.toBase58(),
+          balance: await addressBalances(connection, x.publicKey, BASE_MINT, QUOTE_MINT),
+          kp: x,
+        };
+      };
+    });
+
+    const spinner = ora(`retrieving ${kpBalancesPromises.length} account balances...`).start();
+    const kpBalances = await promiseAllInBatches(kpBalancesPromises, 5);
+    spinner.stop();
+    console.log(chalk.white.bold('\nACCOUNTS'));
+    _.forEach(kpBalances, (x) => console.log(x.pubkey, x.balance.sol, x.balance.quote, x.balance.base));
+
+    // DRAIN BASE
+    if (argv.base || argv.tokens) {
+      console.log(
+        chalk.white.bold('\nBASE SIZE'),
+        _.sumBy(kpBalances, (x) => x.balance.base)
+      );
+
+      // drain base from all wallets
+      const spinner = ora(`draining ${kpBalances.length} base wallets...`).start();
+      const drainTransactionPromises = kpBalances.map((x) => {
+        return async () => {
+          if (x.balance.base === 0) return;
+          const xBaseAta = await Token.getAssociatedTokenAddress(ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID, new PublicKey(BASE_MINT), x.kp.publicKey);
+          const quoteXfer = new Transaction().add(
+            Token.createTransferInstruction(
+              TOKEN_PROGRAM_ID,
+              xBaseAta,
+              new PublicKey(accounts.baseAta),
+              x.kp.publicKey,
+              [],
+              x.balance.base * 10 ** balances.baseDecimals
+            )
+          );
+          spinner.text = `draining base ${x.balance.base} from ${x.kp.publicKey.toBase58()}...`;
+          return await sendAndConfirmTransaction(connection, quoteXfer, [x.kp]);
+        };
+      });
+      const drainTransactions = await promiseAllInBatches(drainTransactionPromises, 5);
+      spinner.stop();
+      console.log(chalk.white.bold('\nBASE DRAINED'), drainTransactions);
+    }
+
+    // DRAIN QUOTE
+    if (argv.quote || argv.tokens) {
+      console.log(
+        chalk.white.bold('\nQUOTE SIZE'),
+        _.sumBy(kpBalances, (x) => x.balance.quote)
+      );
+
+      // drain quote from all wallets
+      const spinner = ora(`draining ${kpBalances.length} quote wallets...`).start();
+      const drainTransactionPromises = kpBalances.map((x) => {
+        return async () => {
+          if (x.balance.quote === 0) return;
+          const xQuoteAta = await Token.getAssociatedTokenAddress(ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID, new PublicKey(QUOTE_MINT), x.kp.publicKey);
+          const quoteXfer = new Transaction().add(
+            Token.createTransferInstruction(
+              TOKEN_PROGRAM_ID,
+              xQuoteAta,
+              new PublicKey(accounts.quoteAta),
+              x.kp.publicKey,
+              [],
+              x.balance.quote * 10 ** balances.quoteDecimals
+            )
+          );
+          spinner.text = `draining quote ${x.balance.quote} from ${x.kp.publicKey.toBase58()}...`;
+          return await sendAndConfirmTransaction(connection, quoteXfer, [x.kp]);
+        };
+      });
+      const drainTransactions = await promiseAllInBatches(drainTransactionPromises, 5);
+      spinner.stop();
+      console.log(chalk.white.bold('\nQUOTE DRAINED'), drainTransactions);
+    }
+
+    // DRAIN SOL
+    if (argv.sol) {
+      console.log(
+        chalk.white.bold('\nSOL SIZE'),
+        _.sumBy(kpBalances, (x) => x.balance.sol / 10 ** 9)
+      );
+
+      // send sol to all wallets
+      const spinner = ora(`draining ${kpBalances.length} sol wallets...`).start();
+      const solTransactionsPromises = keyPairs.map((kp) => {
+        return async () => {
+          const solBalance = await connection.getBalance(kp.publicKey);
+          if (solBalance <= 5000) return false;
+          const solXfer = new Transaction().add(
+            SystemProgram.transfer({
+              fromPubkey: kp.publicKey,
+              toPubkey: pk.publicKey,
+              lamports: solBalance - 5000,
+            })
+          );
+          spinner.text = `draining ${solBalance} from ${kp.publicKey.toBase58()}...`;
+          return await sendAndConfirmTransaction(connection, solXfer, [kp]);
+        };
+      });
+      const solTransactions = await promiseAllInBatches(solTransactionsPromises, 5);
+      console.log('\nSOL DRAINED', solTransactions);
+      spinner.stop();
+    }
   }
 );
 

@@ -29,6 +29,8 @@ const connection = new Connection(RPC_MAINNET);
 // constants
 // TODO: paste the DROP_WALLETS from the check command here
 const DROP_WALLETS = [];
+const WEN_PRORGAM = 'meRjbQXFNf5En86FXT2YPz1dQzLj4Yb3xK8u1MVgqpb';
+import IDL from './idl.js';
 
 // helpers
 async function promiseAllInBatches(promiseFunctions, batchSize) {
@@ -173,7 +175,7 @@ cli.command(
           preflightCommitment,
           commitment,
         });
-        const wenProgram = new anchor.Program(WEN_IDL, WEN_ADDRESSES.program, provider);
+        const wenProgram = new anchor.Program(IDL, WEN_PRORGAM, provider);
 
         // get claim data
         const { data } = await axios.get(claimProofUrl(firstKp.publicKey.toBase58()));

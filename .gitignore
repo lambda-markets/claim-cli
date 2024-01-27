@@ -1,0 +1,6 @@
+node_modules/
+.env.*.local
+keys/*.json
+*.gpg
+*.zip
+.DS_Store

@@ -10,17 +10,16 @@ import { readFile } from 'fs/promises';
 import { hideBin } from 'yargs/helpers';
 
 // dependencies: solana
-import { Connection, PublicKey, Keypair, SystemProgram } from '@solana/web3.js';
-import { getTokenAccount } from './solana.js';
 import { ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID, Token } from '@solana/spl-token';
-import BN from 'bn.js';
+import { Connection, PublicKey, Keypair, SystemProgram } from '@solana/web3.js';
 import * as anchor from '@project-serum/anchor';
+import { getTokenAccount } from './solana.js';
+import BN from 'bn.js';
 
 // configuration
 import * as dotenv from 'dotenv';
 const NODE_ENV = process.env.NODE_ENV || 'development';
 dotenv.config({ path: path.resolve(path.resolve(), `.env.${NODE_ENV}.local`) });
-// const pkg = JSON.parse(await readFile('./package.json'));
 const { RPC_MAINNET, QUOTE_MINT, BASE_MINT } = process.env;
 
 // connect to solana
@@ -29,19 +28,21 @@ const connection = new Connection(RPC_MAINNET);
 // constants
 // TODO: paste the DROP_WALLETS from the check command here
 const DROP_WALLETS = [];
-const WEN_PRORGAM = 'meRjbQXFNf5En86FXT2YPz1dQzLj4Yb3xK8u1MVgqpb';
+// NOTE: same program for wen and for jup
+const LFG_MERKLE_PROGRAM = 'meRjbQXFNf5En86FXT2YPz1dQzLj4Yb3xK8u1MVgqpb';
+// NOTE: change mint (preset for $JUP now)
+const TOKEN_MINT = new PublicKey('JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN');
+const TOKEN_DECIMALS = 1e6;
 import IDL from './idl.js';
 
 // helpers
 async function promiseAllInBatches(promiseFunctions, batchSize) {
   let results = [];
-
   for (let i = 0; i < promiseFunctions.length; i += batchSize) {
     const batchFuncs = promiseFunctions.slice(i, i + batchSize);
     const batchPromises = batchFuncs.map((func) => func()); // Start each promise
     results = [...results, ...(await Promise.all(batchPromises))];
   }
-
   return results;
 }
 async function addressBalances(conn, publicKey, baseMint, quoteMint) {
@@ -79,7 +80,8 @@ async function addressBalances(conn, publicKey, baseMint, quoteMint) {
     },
   };
 }
-const claimProofUrl = (pubkey) => `https://worker.jup.ag/jup-claim-proof/WENWENvqqNya429ubCdR81ZmD69brwQaaBYY6p3LCpk/${pubkey}`;
+
+const claimProofUrl = (pubkey) => `https://worker.jup.ag/jup-claim-proof/${TOKEN_MINT.toBase58()}/${pubkey}`;
 
 // initialise argv parser
 const cli = yargs(hideBin(process.argv)).usage('$0 <cmd> [args]');
@@ -136,7 +138,7 @@ cli.command(
 
     // execute all promises in batches of 5 and report total
     const airdropProofData = await promiseAllInBatches(airdropProofPromises, 5);
-    console.log('TOTAL', _.sumBy(airdropProofData, 'amount') / 1e5);
+    console.log('TOTAL', _.sumBy(airdropProofData, 'amount') / TOKEN_DECIMALS);
     console.log(
       'DROP_WALLETS',
       airdropProofData.filter((x) => x.amount > 0).map((x) => x.pubkey)
@@ -157,13 +159,12 @@ cli.command(
   },
   async (argv) => {
     // get keyfiles
-    const keyFiles = FastGlob.sync(path.resolve(path.resolve(), argv.deprecated ? 'keys/DEPRECATED/*.json' : 'keys/*.json'));
+    const keyFiles = FastGlob.sync(path.resolve(path.resolve(), 'keys/*.json'));
     const keyPairs = await Promise.all(keyFiles.map(async (x) => Keypair.fromSecretKey(new Uint8Array(JSON.parse(await readFile(x))))));
 
     // constants
     const preflightCommitment = 'processed';
     const commitment = 'confirmed';
-    const mint = new PublicKey('WENWENvqqNya429ubCdR81ZmD69brwQaaBYY6p3LCpk');
 
     const claimPromises = DROP_WALLETS.map((w) => {
       return async () => {
@@ -175,7 +176,7 @@ cli.command(
           preflightCommitment,
           commitment,
         });
-        const wenProgram = new anchor.Program(IDL, WEN_PRORGAM, provider);
+        const wenProgram = new anchor.Program(IDL, LFG_MERKLE_PROGRAM, provider);
 
         // get claim data
         const { data } = await axios.get(claimProofUrl(firstKp.publicKey.toBase58()));
@@ -188,7 +189,7 @@ cli.command(
         // DERIVE PDA: distributor
         // NOTE: you normally have to do this but the api call actually gives you the address apparently
         // const [distributorAccount] = await PublicKey.findProgramAddress(
-        //   [Buffer.from('MerkleDistributor'), mint.toBuffer(), Buffer.alloc(8)],
+        //   [Buffer.from('MerkleDistributor'), TOKEN_MINT.toBuffer(), Buffer.alloc(8)],
         //   wenProgram.programId
         // );
         const distributorAccount = new PublicKey(data.merkle_tree);
@@ -202,15 +203,15 @@ cli.command(
         // console.log('claimStatusAccount', claimStatusAccount.toBase58());
 
         // get on curve (non seeded) ata of the mint for the distributor account
-        const distributorAta = await Token.getAssociatedTokenAddress(ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID, mint, distributorAccount, true);
+        const distributorAta = await Token.getAssociatedTokenAddress(ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID, TOKEN_MINT, distributorAccount, true);
         // console.log('distributorAta', distributorAta);
 
         // derive claimer mint ata and generate creation instruction
-        const claimerMintAta = await Token.getAssociatedTokenAddress(ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID, mint, firstKp.publicKey);
+        const claimerMintAta = await Token.getAssociatedTokenAddress(ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID, TOKEN_MINT, firstKp.publicKey);
         const createClaimerMintAtaInstruction = Token.createAssociatedTokenAccountInstruction(
           ASSOCIATED_TOKEN_PROGRAM_ID,
           TOKEN_PROGRAM_ID,
-          mint,
+          TOKEN_MINT,
           claimerMintAta,
           firstKp.publicKey,
           firstKp.publicKey

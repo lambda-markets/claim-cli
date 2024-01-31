@@ -1,5 +1,5 @@
 # claim
-merkle distributor claim tool
+quickly hacked together merkle distributor claim tool (lfg program by jupiter)
 
 
 ## usage
